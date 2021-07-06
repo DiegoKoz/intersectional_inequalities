@@ -1,0 +1,135 @@
+---
+title: "Topics Robustness"
+output: html_notebook
+---
+
+
+```{r setup}
+library(tidyverse)
+library("superheat")
+```
+
+
+## random example
+
+
+```{r}
+simulate_matrix <- function(nrow, ncol){
+  M <- matrix(rexp(nrow*ncol, 1.5), nrow = nrow, ncol = ncol )
+  M/rowSums(M)
+}
+
+perturbate_matrix <- function(perturbation_degree = 0.01,A){
+  B <- A + runif(dim(A)[1]*dim(A)[2], min = 0, max = perturbation_degree)
+  B/rowSums(B)
+}
+
+column_permutation <- function(M){
+  M[,sample(ncol(M))]
+}
+
+L2_distance <- function(A,B){
+  
+  norm(A-B, '2')
+}
+```
+
+```{r}
+A <- simulate_matrix(nrow = 30, 10)
+```
+
+
+```{r}
+perturbated_matrices <- tibble(perturbation_degree = seq(0, 1, 0.001)) %>% 
+  mutate(M = map(perturbation_degree, perturbate_matrix, A),
+         M_permuted = map(M, column_permutation))
+```
+
+## L2 NORM
+
+```{r}
+
+perturbated_matrices <- perturbated_matrices %>%
+  mutate(distance = map_dbl(M,L2_distance,A),
+         distance_permuted = map_dbl(M_permuted,L2_distance,A))
+
+df <- perturbated_matrices %>%
+  #unnest(c(distance,distance_permuted)) %>% 
+  select(perturbation_degree,distance,distance_permuted)
+```
+
+```{r}
+df %>% 
+  pivot_longer(cols = c(distance,distance_permuted)) %>% 
+  ggplot(aes(perturbation_degree,value, color = name))+
+  geom_point()+
+  facet_grid(.~name)
+
+```
+## Norm-vector cosine similarity
+
+Cosine similarity between two vectors
+$$
+C = \frac{ \sum \limits_{i=1}^{n}A_{i} B_{i} }{ \sqrt{\sum \limits_{i=1}^{n} A_{i}^2} \cdot  \sqrt{\sum \limits_{i=1}^{n} B_{i}^2} }
+$$
+```{r}
+norm_vector_cosine_similarity <- function(A,B){
+A_norms <- map_dbl(1:dim(A)[1], ~norm(A[.x,],type = '2'))
+B_norms <- map_dbl(1:dim(A)[1], ~norm(B[.x,],type = '2'))
+sum(A_norms*B_norms)/sqrt(sum(A_norms^2)*sum(B_norms^2))
+# norm(A_norms-B_norms,'F')
+}
+```
+
+```{r}
+perturbated_matrices %>%
+  mutate(similarity = map_dbl(M,norm_vector_cosine_similarity,A),
+         similarity_permuted = map_dbl(M_permuted,norm_vector_cosine_similarity,A)) %>% 
+  pivot_longer(cols = c(similarity,similarity_permuted)) %>% 
+  ggplot(aes(perturbation_degree,value, color = name))+
+  geom_point()+
+  facet_grid(.~name)
+```
+
+
+
+
+# Real data
+
+```{r}
+results <- read_csv('../results/cosine_similarities_multiple_runs.csv')
+results_scaled <- read_csv('../results/cosine_similarities_multiple_runs_scaled.csv')
+```
+
+```{r}
+df <- results %>% 
+  select(-X1) %>% 
+  as.data.frame(.)
+
+names(df) <- c(1:10, 'health', 'random')
+rownames(df) <- c(1:10, 'health', 'random')
+
+
+superheat(df,
+          bottom.label.text.size = 4,
+          bottom.label.size = .2,
+          bottom.label.text.angle = c(rep(0,10),45,45))
+```
+Re-scaled result
+
+
+```{r}
+  df <- results_scaled %>% 
+  select(-X1) %>% 
+  as.data.frame(.)
+
+names(df) <- c(1:10, 'health', 'random')
+rownames(df) <- c(1:10, 'health', 'random')
+
+
+superheat(df,
+          bottom.label.text.size = 4,
+          bottom.label.size = .2,
+          bottom.label.text.angle = c(rep(0,10),45,45))
+```
+

@@ -1,0 +1,374 @@
+---
+title: "Weighting schemes"
+output: html_notebook
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  message = FALSE,warning = FALSE, fig.width = 6, fig.height = 6)
+```
+
+```{r}
+#library(e1071)  
+library(MCMCpack)
+library(tidyverse)
+library(ggridges)
+library(ggthemes)
+library(gridExtra)
+set.seed(1234)
+```
+
+
+- The goal is to build a weighted distribution of race by (both) first and last name. 
+- If someone has a (first/last) name with a high probability, we want to give it more priority.
+
+
+# definitions
+
+## Version 1: Standard Deviation or variance 
+
+- For a vector of probabilities with 4 categories, the standard deviation, `sd` moves between `r sd(c(0.25,0.25,0.25,0.25))` for perfect uniformity,  and `r sd(c(0,0,0,1))` for all the probability to one cat.
+
+- the greater the sd, the higher the weight given to the (first/last) name.
+- we normalize the values so the sum to 1, with
+
+$$
+name_{weight} = \frac{name_{sd}}{name_{sd}+lastname_{sd}}
+$$
+
+- We can add a parameter `exp` so we use the sd when `exp=1`, the variance when `exp=2`, and possibly higher orders. The higher the `exp`, the more extreme the weighting scheme 
+
+
+```{r}
+weighting_scheme_sd <- function(name, lastname, exp = 1){
+  
+  name_sd <- sd(name)^exp
+  lastname_sd <- sd(lastname)^exp
+  
+  total <- name_sd+lastname_sd
+  
+  if (total==0) {
+    name_sd = lastname_sd =1
+    total=2
+  }
+  
+  name_weight <- name_sd/total
+  lastname_weight <- lastname_sd/total
+  
+  c('name_weight'=name_weight,'lastname_weight'=lastname_weight)
+}
+```
+
+## alternative, entropy-based
+
+- A measure that explicitly measure the level of disorder_ in a probability distribution is the concept of entropy.
+
+$$
+e= \sum_{i=1}^c -p_i \log_2 p_i
+$$
+
+```{r}
+entropy <- function(vec){
+  vec<-vec[vec>0]
+  -sum(vec * log2(vec))}
+```
+
+- For a vector of probabilities with 4 categories, the entropy moves between `r entropy(c(0.25,0.25,0.25,0.25))` for perfect uniformity,  and `r entropy(c(0,0,0,1))` for all the probability to one cat.
+
+
+```{r}
+weighting_scheme_entropy <- function(name, lastname, exp=1){
+  
+  name_e <- entropy(name)^exp
+  lastname_e <- entropy(lastname)^exp
+
+  total <- name_e+lastname_e
+  
+  if (total==0) {
+    name_e = lastname_e =1
+    total=2
+  }
+  
+  name_weight <- 1- name_e/total
+  lastname_weight <- 1- lastname_e/total
+  
+  c('name_weight'=name_weight,'lastname_weight'=lastname_weight)
+}
+```
+
+
+
+## Simulations generator
+
+for evaluation:
+
+1. generate 150 random distributions for first and last names with `simulate_distributions`
+2. calculate weights for each model and exp with `calculate_weights`
+3. Build three different plots for analysis with `plot_simulation`  binned by the maximum probability in first/last name (i.e., group by different possible scenarios)
+
+```{r}
+simulate_distributions <- function(){
+  
+  names <- rdirichlet(150,alpha = c(1,1,1,1)) 
+  lastnames <- rdirichlet(150,alpha = c(1,1,1,1))
+  
+  simulations <- expand_grid(name_id=1:150,lastname_id=1:150) %>% 
+    mutate(name_dist = map(name_id, ~ names[.x,]),
+           lastname_dist = map(lastname_id, ~ lastnames[.x,]),
+           name_max =  map(name_dist,max),
+           lastname_max = map(lastname_dist,max)
+           )
+  simulations
+}
+
+calculate_weights <- function(simulations,type='sd', exp=1){
+  
+  
+  if (type=='sd') {
+    simulations <- simulations %>% 
+      mutate(weights = map2(name_dist, lastname_dist,~weighting_scheme_sd(.x,.y,exp)))
+  }
+  if (type=='entropy') {
+    simulations <- simulations %>% 
+      mutate(weights = map2(name_dist, lastname_dist,~weighting_scheme_entropy(.x,.y,exp)))
+  }
+  
+  simulations <- simulations %>% 
+    unnest(cols = c(name_max,lastname_max,name_max,lastname_max)) %>% 
+    arrange(name_max,lastname_max) %>% 
+    unnest_wider(weights)
+  
+  simulations
+}
+
+plot_simulation <- function(simulations,title,plot_type='bar'){
+  
+  
+  if (plot_type == 'bar') {
+    
+    plot <- simulations %>% 
+      mutate(name_max = cut(name_max, 10,dig.lab=1),
+             lastname_max = cut(lastname_max, 10,dig.lab=1)
+      ) %>% 
+      group_by(name_max, lastname_max) %>% 
+      summarise(name_weight = mean(name_weight),
+                lastname_weight = mean(lastname_weight)) %>% 
+      pivot_longer(name_weight:lastname_weight) %>% 
+      ggplot(aes(x=1,y=value,label=scales::percent(value,2), fill = name, group=name))+
+      geom_col(position = 'dodge')+
+      geom_text(position = position_dodge(width = 1), size=3,vjust = -0.1)+
+      facet_grid(name_max~lastname_max)+
+      labs(x='max prop. name',y='max prop. lastname', fill='', title = title)+
+      scale_x_continuous(position = "top")+
+      scale_y_continuous(position = "right",limits = c(0,1.2))+
+      theme(legend.position = 'bottom',
+            axis.text = element_blank(),
+            axis.ticks = element_blank())
+  }
+  if (plot_type =='density') {
+    
+    plot <- simulations %>% 
+      mutate(name_max = cut(name_max, 10,dig.lab=1),
+             lastname_max = cut(lastname_max, 10,dig.lab=1)
+      ) %>% 
+      pivot_longer(name_weight:lastname_weight) %>% 
+      ggplot(aes(x=value,y=name, fill = name, group=name))+
+      geom_density_ridges()+
+      facet_grid(name_max~lastname_max)+
+      labs(x='max proportion First name',y='max proportion last name', fill='', title = title)+
+      #scale_x_continuous(labels = scales::percent)+
+      theme(legend.position = 'bottom',
+            axis.text.y = element_blank(),
+            axis.text.x = element_blank(),
+            # axis.text.x = element_text(angle = 90),
+            axis.ticks = element_blank(),
+            strip.text.x = element_text(angle = 0, size = 6),
+            strip.text.y = element_text(angle = 0))+
+      scale_fill_gdocs()
+  }
+  if (plot_type == 'hex'){
+    
+    plot <- simulations %>% 
+      ggplot(aes(x=name_max,y=lastname_max,z=name_weight))+
+      stat_summary_hex(fun = function(x) mean(x),bins = 30)+
+      labs(x='max prop. name',y='max prop. lastname', fill='Name weight', title = title)+
+      scale_fill_continuous(type = 'viridis',labels = scales::percent)+
+      theme_minimal()+
+      theme(legend.position = 'bottom',
+            axis.ticks = element_blank())
+    
+  }
+  plot
+}
+```
+
+
+an implementation on how the new weights are calculated
+```{r}
+weighted_distribution <- function(name, lastname,type='sd', exp=1){
+  
+  if (type=='sd') {
+    weights <- weighting_scheme_sd(name, lastname,exp = exp)
+  }
+  
+  if (type=='entropy') {
+    weights <- weighting_scheme_entropy(name, lastname,exp = exp)
+  }
+  
+  
+  name*weights['name_weight'] + lastname*weights['lastname_weight']
+}
+```
+
+# Examples
+
+
+- extreme case
+```{r}
+name <- c(1,0,0,0)
+lastname <- c(0.25, 0.25, 0.25,0.25)
+
+
+weighting_scheme_sd(name, lastname) 
+weighting_scheme_entropy(name, lastname) 
+```
+
+all models give all prob. to name
+
+- even case
+```{r}
+name <- c(0.25, 0.25, 0.25,0.25)
+lastname <- c(0.25, 0.25, 0.25,0.25)
+
+weighting_scheme_sd(name, lastname) 
+weighting_scheme_entropy(name, lastname) 
+```
+
+all models give equal prob.
+
+
+- useful name, unuseful lastname
+
+```{r}
+name <- c(0.05, 0.05, 0.85,0.05)
+lastname <- c(0.3,0.4,.1,.2)
+```
+
+```{r}
+#with sd
+weighting_scheme_sd(name, lastname) 
+weighted_distribution(name, lastname,type='sd')
+```
+
+
+```{r}
+#with variance
+weighting_scheme_sd(name, lastname, exp = 2) 
+weighted_distribution(name, lastname,type='sd', exp = 2)
+```
+
+
+```{r}
+#with entropy
+weighting_scheme_entropy(name, lastname) 
+weighted_distribution(name, lastname,type='entropy', exp = 1)
+
+```
+
+
+```{r}
+#with entropy^2
+weighting_scheme_entropy(name, lastname, exp = 2) 
+weighted_distribution(name, lastname,type='entropy', exp = 2)
+```
+
+
+# Simulations
+
+```{r}
+
+simulated_names <- simulate_distributions()
+
+weights_sd <- calculate_weights(simulated_names, type = 'sd',exp = 1)
+weights_var <- calculate_weights(simulated_names, type = 'sd',exp = 2)
+
+weights_entropy <- calculate_weights(simulated_names, type = 'entropy',exp = 1)
+weights_entropy2 <- calculate_weights(simulated_names, type = 'entropy',exp = 2)
+```
+
+```{r}
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+```
+
+
+## Bar plots
+
+```{r}
+p1 <- plot_simulation(weights_sd,plot_type='bar',title = 'Standard Deviation')
+p2 <- plot_simulation(weights_var,plot_type='bar',title = 'Variance')
+p3 <- plot_simulation(weights_entropy,plot_type='bar',title = 'Entropy')
+p4 <- plot_simulation(weights_entropy2,plot_type='bar',title = 'Entropy^2')
+
+grid.arrange(p1,p2,p3,p4, nrow=2)
+```
+
+## Density plots
+
+```{r message=FALSE, warning=FALSE}
+p1 <- plot_simulation(weights_sd,plot_type='density',title = 'Standard Deviation') + 
+  theme(legend.position="bottom") +
+  labs(x='')
+p2 <- plot_simulation(weights_var,plot_type='density',title = 'Variance') + 
+  theme(legend.position="none") +
+  labs(x='', y ='')
+p3 <- plot_simulation(weights_entropy,plot_type='density',title = 'Entropy')  + 
+  theme(legend.position="none")
+p4 <- plot_simulation(weights_entropy2,plot_type='density',title = 'Entropy^2')  + 
+  theme(legend.position="none")+
+  labs(y='')
+
+
+mylegend<-g_legend(p1)
+
+density_plot <- grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2, p3,p4, nrow=2),
+             mylegend, nrow=2,heights=c(10, 1))
+
+ggsave('../results/plots/density_plot_simulation.png', plot = density_plot, width = 12, height = 6, dpi = 300)
+
+```
+
+
+## Hex plots
+
+
+```{r}
+
+weights_sd %>% 
+  mutate(type = 'Standard Deviation') %>% 
+  bind_rows(weights_var %>% 
+              mutate(type = 'Variance')) %>% 
+  bind_rows(weights_entropy %>% 
+              mutate(type = 'Entropy')) %>%
+  bind_rows(weights_entropy2 %>% 
+              mutate(type = 'Entropy^2')) %>% 
+  ggplot(aes(x=name_max,y=lastname_max,z=name_weight))+
+  stat_summary_hex(fun = function(x) mean(x),bins = 30)+
+  labs(x='max proportion first name',y='max proportion last name', fill='First Name weight')+
+  facet_wrap(.~ type)+
+  scale_fill_continuous(type = 'viridis',labels = scales::percent)+
+  theme_minimal()+
+  scale_x_continuous(labels = scales::percent)+
+  scale_y_continuous(labels = scales::percent)+
+  theme(axis.ticks = element_blank(),
+        text = element_text(size = 18))
+ggsave('../results/plots/hex_plot_simulation.png', width = 12, height = 6, dpi = 300)
+```
+
+

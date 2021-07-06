@@ -1,0 +1,281 @@
+---
+title: "Names Skweness by racial group"
+output: html_notebook
+---
+
+- There is a potential source of bias in the prediction coming from the nonuniform informativeness of names by race. I.e., if one group has very distinctive names while the others have more common names/lastnames between them, we would only be able to distinguish those from the first group.
+
+- Therefore, we need to be __extremely careful__ about inferences on the population distribution by race (in the case above, we would overestimate the first group and underestimate the others.)
+
+- To see how much impact does this effect have on our dataset, we can study directly the source of information (lastnames and firstnames distribution in the overall population).
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  message = FALSE,warning = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(ggridges)
+library(scales)
+library(readxl)
+library(janitor)
+library(ggthemes)
+library(gridExtra)
+set.seed(1234)
+```
+
+```{r}
+lastnames <- read_excel("../data/names_freq.xlsx", 
+    sheet = "Family names", range = cell_cols("A:H")) %>% 
+    #mutate(pctother = pct2prace + pctaian) %>% #build the 'other' group 
+  select(-c(pct2prace,pctaian))
+
+firstnames <- read_excel("../data/names_freq.xlsx", 
+    sheet = "Given names", range = cell_cols("A:I")) %>% 
+    #mutate(pctother = pct2prace + pctaian) %>% #build the 'other' group 
+  select(-c(Firstname_wildcard,pct2prace,pctaian))%>% 
+  rename(count=obs) %>% 
+  mutate_at(.vars = vars(starts_with('pct')), .funs = ~.x/100)
+```
+
+
+```{r functions}
+select_top <- function(names, x){
+  df <- names %>% 
+    pivot_longer(starts_with('pct'), names_prefix = 'pct', names_to = 'group', values_to = 'proportion') %>% 
+    mutate(count = proportion*count) %>%
+    group_by(group, .drop = FALSE) %>% 
+    filter(proportion>x) %>%
+    summarise(count = sum(count)) 
+    df[paste0('top_',x)] = df$count/sum(df$count)
+    df %>% 
+    select(-count)
+}
+count_top <- function(names, x){
+  df <- names %>% 
+    pivot_longer(starts_with('pct'), names_prefix = 'pct', names_to = 'group', values_to = 'proportion') %>% 
+    mutate(count = proportion*count) %>%
+    filter(proportion>x)
+  sum(df$count)
+}
+```
+
+
+# Lastnames
+
+- What we keep if we keep only the top x%?
+
+
+```{r}
+
+select_top(lastnames,0) %>% 
+  arrange(-top_0) %>% 
+  left_join(select_top(lastnames, .9), by = 'group') %>% 
+  left_join(select_top(lastnames, .8), by = 'group') %>% 
+  left_join(select_top(lastnames, .7), by = 'group') %>% 
+  left_join(select_top(lastnames, .6), by = 'group') %>% 
+  mutate_if(is.numeric, percent)
+```
+
+```{r}
+filter_df_lastnames <- map_dfc(seq(0,0.99,0.01),~ select_top(lastnames,.x)) %>%   
+  select(!starts_with('group')) %>% 
+  mutate(group = c('asian','black','hispanic','white')) %>% 
+  pivot_longer(starts_with('top_'), names_prefix = 'top_', names_to = 'top', values_to = 'prop') %>% 
+  mutate(top = as.numeric(top))
+
+count_df_lastnames <- tibble(top = seq(0,0.99,0.01)) %>%
+  group_by(top) %>% 
+  mutate(n = count_top(lastnames,top))
+
+```
+
+```{r}
+
+p1_lastnames <- count_df_lastnames %>% 
+  ggplot(aes(x=top, y=n/1000000, fill = n)) +
+  geom_col()+
+  theme_minimal()+
+  scale_fill_gradient(high = "aquamarine3", low = "coral2", na.value = NA)+
+  # scale_fill_viridis_c(option = "F",alpha=0.75)+
+  theme(axis.text.x = element_blank(),
+        legend.position = 'none',
+        text=element_text(size = 18))+
+  labs(x='', y='Millions', title = 'Last Names')
+
+# p2 <- filter_df %>% 
+#   ggplot(aes(top, prop, color=group, group=group))+
+#   geom_line()+
+#   theme_minimal()+
+#   scale_x_continuous(breaks = seq(0,1, 0.1))+
+#   labs(y='population=100')+
+#   theme(legend.position = 'bottom')
+# 
+# 
+# 
+# grid.arrange(p1,p2, nrow=2,  heights=c(1, 4))
+
+p2_lastnames <- filter_df_lastnames %>% 
+  group_by(group) %>% 
+  mutate(prop = prop/prop[top==0]*100) %>% 
+  ggplot(aes(top, prop, color=group, group=group))+
+  geom_line()+
+  theme_minimal()+
+  scale_x_continuous(breaks = c(0,0.25,0.5,seq(0.7,1,0.1)), labels = percent_format(accuracy = 1.0))+
+  labs(x='threshold',y='population=100')+
+  theme(legend.position = 'bottom',
+        text=element_text(size = 18))
+
+# grid_plot_lastnames <- arrangeGrob(p1,p2, nrow=2,  heights=c(1, 4))
+
+#ggsave('../results/plots/lastnames_thresholds.png',plot = grid_plot, width = 10, height = 6, dpi=300)
+```
+
+
+
+
+# First names
+
+- What we keep if we keep only the top x%?
+
+```{r}
+
+select_top(firstnames,0) %>% 
+  arrange(-top_0) %>% 
+  left_join(select_top(firstnames, .9), by = 'group') %>% 
+  left_join(select_top(firstnames, .8), by = 'group') %>% 
+  left_join(select_top(firstnames, .7), by = 'group') %>% 
+  left_join(select_top(firstnames, .6), by = 'group') %>% 
+  mutate_if(is.numeric, percent)
+```
+
+
+The distribution at first names is very different from the census distribution. Whit is highly over represented. 
+
+```{r}
+filter_df_firstnames <- map_dfc(seq(0,0.99,0.01),~ select_top(firstnames,.x)) %>%   
+  select(!starts_with('group')) %>% 
+  mutate(group = c('asian','black','hispanic','white')) %>% 
+  pivot_longer(starts_with('top_'), names_prefix = 'top_', names_to = 'top', values_to = 'prop') %>% 
+  mutate(top = as.numeric(top))
+
+count_df_firstnames <- tibble(top = seq(0,0.99,0.01)) %>%
+  group_by(top) %>% 
+  mutate(n = count_top(firstnames,top))
+
+```
+
+```{r}
+
+p1_firstnames <- count_df_firstnames %>% 
+  ggplot(aes(x=top, y=n/1000000, fill = n)) +
+  geom_col()+
+  theme_minimal()+
+  scale_fill_gradient(high = "aquamarine3", low = "coral2", na.value = NA)+
+  # scale_fill_viridis_c(option = "F",alpha=0.75)+
+  theme(axis.text.x = element_blank(),
+        legend.position = 'none',
+        text=element_text(size = 18))+
+  labs(x='', y='', title = 'First Names')
+
+# p2 <- filter_df %>% 
+#   ggplot(aes(top, prop, color=group, group=group))+
+#   geom_line()+
+#   theme_minimal()+
+#   scale_x_continuous(breaks = seq(0,1, 0.25))+
+#   labs(y='population=100')+
+#   theme(legend.position = 'bottom')
+# 
+# 
+# 
+# grid.arrange(p1,p2, nrow=2,  heights=c(1, 4))
+p2_firstnames <- filter_df_firstnames %>% 
+  group_by(group) %>% 
+  mutate(prop = prop/prop[top==0]*100) %>% 
+  ggplot(aes(top, prop, color=group, group=group))+
+  geom_line()+
+  theme_minimal()+
+  scale_x_continuous(breaks = c(0,0.25,0.5,seq(0.7,1,0.1)), labels = percent_format(accuracy = 1.0))+
+  labs(x='threshold',y='')+
+  # labs(x='threshold',y='population=100')+
+  theme(legend.position = 'bottom',
+        text=element_text(size = 18))
+
+# grid_plot <- grid.arrange(p1,p2, nrow=2,  heights=c(1, 4))
+# ggsave('../results/plots/firstnames_thresholds.png',plot = grid_plot, width = 10, height = 6, dpi=300)
+
+```
+
+
+```{r}
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+```
+
+```{r}
+
+mylegend<-g_legend(p2_lastnames)
+
+grid_plot <- grid.arrange(arrangeGrob(p1_lastnames,p1_firstnames,p2_lastnames+ theme(legend.position="none"),
+                                      p2_firstnames+ theme(legend.position="none"),
+                                      nrow=2, heights=c(1, 4)),
+                          # arrangeGrob(, nrow=2, heights=c(1, 4)),
+             mylegend, nrow=2,heights=c(10,1))
+
+ggsave('../results/plots/thresholds.png',plot = grid_plot, width = 10, height = 6, dpi=300, scale = 1.2)
+```
+
+
+
+
+## Normalized first names
+
+```{r}
+normalized_names <- read_csv('../data/names_normalized.csv')
+```
+
+
+
+```{r}
+filter_df <- map_dfc(seq(0,0.99,0.01),~ select_top(normalized_names,.x)) %>%   
+  select(!starts_with('group')) %>% 
+  mutate(group = c('api','black','hispanic','other','white')) %>% 
+  pivot_longer(starts_with('top_'), names_prefix = 'top_', names_to = 'top', values_to = 'prop') %>% 
+  mutate(top = as.numeric(top))
+
+count_df <- tibble(top = seq(0,0.99,0.01)) %>%
+  group_by(top) %>% 
+  mutate(n = count_top(normalized_names,top))
+```
+
+
+```{r}
+p1 <- count_df %>% 
+  ggplot(aes(x=top, y=n/1000000, fill = n)) +
+  geom_col()+
+  theme_minimal()+
+  scale_fill_gradient(high = "aquamarine3", low = "coral2", na.value = NA)+
+  # scale_fill_viridis_c(option = "F",alpha=0.75)+
+  theme(axis.text.x = element_blank(),
+        legend.position = 'none')+
+  labs(x='', y='Millions')
+
+p2 <- filter_df %>% 
+  ggplot(aes(top, prop, color=group, group=group))+
+  geom_line()+
+  theme_minimal()+
+  scale_x_continuous(breaks = seq(0,1, 0.1))+
+  labs(y='population=100')+
+  theme(legend.position = 'bottom')
+
+
+
+grid.arrange(p1,p2, nrow=2,  heights=c(1, 4))
+```
+

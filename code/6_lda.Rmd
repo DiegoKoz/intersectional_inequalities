@@ -1,0 +1,148 @@
+---
+title: "Topics Distribution"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(plotly)
+```
+
+
+# 200 topics
+```{r message=FALSE}
+
+joint_prob <- read_csv('../results/joint_prob_200.csv')
+marginal_by_group <- read_csv('../results/marginal_by_group_200.csv')
+marginal_by_topic <- read_csv('../results/marginal_by_topic_200.csv')
+dist_diff_topic <- read_csv('../results/dist_diff_topic_200.csv')
+
+
+joint_prob_gender <- read_csv('../results/joint_prob_gender_200.csv')
+marginal_by_group_gender <- read_csv('../results/marginal_by_group_gender_200.csv')
+marginal_by_topic_gender <- read_csv('../results/marginal_by_topic_gender_200.csv')
+dist_diff_topic_gender <- read_csv('../results/dist_diff_topic_gender_200.csv')
+
+top_words <- read_csv('../results/top_words.csv')
+
+df_ratio <- dist_diff_topic_gender %>% pivot_longer(!topic,names_to = c("group", "gender"),
+                                                  names_pattern = "(.*)_(.*)",
+                                                  values_to = 'ratio')
+
+```
+
+General distribution
+
+```{r}
+joint_prob %>% 
+  select(-topic) %>% 
+  summarise_all(sum)
+```
+```{r}
+joint_prob_gender %>% 
+  pivot_longer(!topic,names_to = c("group", "gender"),
+               names_pattern = "(.*)_(.*)",
+               values_to = 'prob') %>% 
+  group_by(group, gender) %>% 
+  summarise(prob = sum(prob)) %>% 
+  ggplot(aes(group, prob,fill = group, label = scales::percent(prob)))+
+  geom_col(position = position_dodge(width = 1))+
+  geom_text(position = position_dodge(width = 1),vjust=0)+
+  facet_wrap(.~gender)
+```
+
+
+
+## Topics:
+
+We can explore the topics using the following [tool](../results/lda_tsne_ssha_k200.html)
+
+```{r echo=FALSE, fig.width=2, fig.height=2, message=FALSE, warning=FALSE}
+shiny::includeHTML("../results/lda_tsne_ssha_k200.html")
+```
+
+
+## Selected topics
+
+- 7: Food program
+- 15: LGBT
+- 24: Race
+- 30: Africa
+- 40: Mexico
+- 46: Health care
+- 56: China
+- 105: Workers
+- 128: Communities
+- 157: Violence against women
+- 174: Inmigration
+- 186: Climate Change
+
+```{r}
+#datapasta::tribble_paste()
+
+interesting_topics <- tibble::tribble(
+                                         ~topic,                      ~description,
+                                         7L,           "Food program",
+                                        15L,                   "LGBT",
+                                        24L,                   "Race",
+                                        30L,                 "Africa",
+                                        40L,                 "Mexico",
+                                        46L,            "Health care",
+                                        56L,                  "China",
+                                       105L,                "Workers",
+                                       128L,            "Communities",
+                                       157L, "Violence against women",
+                                       174L,            "Inmigration",
+                                       186L,         "Climate Change"
+                                       )
+
+```
+
+
+
+
+## Topic with highest over representation by group and gender
+
+
+```{r, fig.asp=2}
+
+plt <- df_ratio %>% 
+  group_by(group,gender) %>% 
+  top_n(5, wt = ratio) %>% 
+  arrange(group, gender, -ratio) %>% 
+  left_join(top_words, by = "topic") %>% 
+  mutate(topic = factor(topic)) %>% 
+  # mutate(ratio = scales::percent(ratio)) %>% 
+  ggplot(aes(topic, ratio, fill = topic, text = paste('Top Words:', top_words,
+                                                           '<br> ratio', scales::percent(ratio))))+
+  geom_col()+
+  scale_y_continuous(labels = scales::percent)+
+  facet_wrap(group~gender, scales = 'free_x')+
+  theme(legend.position = 'none')
+
+
+ggplotly(plt,tooltip = c("text"))
+
+```
+
+
+```{r fig.width=4, fig.height=4}
+interesting_topics %>% 
+  left_join(df_ratio, by='topic') %>% 
+  # pivot_longer(white:other, names_to ='group',values_to = 'ratio') %>% 
+  mutate(#name = str_replace_all(description, 
+          #                      pattern = " ", 
+           #                     replacement = "\n"),
+         name = factor(paste(topic, description)),
+         name = fct_reorder(name,.x = topic)) %>% 
+  ggplot(aes(name, ratio, fill = group))+
+  geom_col(position = position_dodge())+
+  facet_wrap(name~gender, scales = 'free',ncol = 4)+
+  scale_y_continuous(labels = scales::percent)+
+  labs(x ='',y='ratio')+
+  theme(axis.text.x = element_blank(),
+        legend.position = 'bottom')
+
+```

@@ -1,0 +1,296 @@
+---
+title: "Weights Distribution Analysis"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  message = FALSE,warning = FALSE, fig.width = 6, fig.height = 6)
+```
+
+```{r}
+library(tidyverse)
+library(ggridges)
+library(scales)
+library(plotly)
+# library(ggthemes)
+# library(gridExtra)
+set.seed(1234)
+```
+
+```{r}
+unique_authors <- read_csv('../data/unique_authors.csv')
+```
+
+```{r}
+unique_authors <- unique_authors %>% 
+  select(-ends_with('other'))
+```
+
+
+```{r}
+unique_authors <- unique_authors %>% 
+  select(-c(Prenom,nom)) %>% 
+    pivot_longer(2:last_col(),
+  names_to = c("mode",'normalized', "group"),
+  values_to = 'proportion',
+  names_pattern = "(.+)_(.+)_(.+)"
+  )
+```
+
+
+## Fractionalized counting with lastnames
+
+This is the closest to the _ground truth_ we can get.
+
+
+```{r}
+frac_counting <- unique_authors %>% 
+  filter(mode=='lastname') %>% 
+  group_by(group) %>% 
+  summarise(n = sum(proportion)) %>% 
+  ungroup() %>% 
+  mutate(freq = n /sum(n),
+         total = sum(n)) %>% 
+  arrange(-n)
+
+frac_counting
+```
+
+
+## How many obvservation we keep with:
+
+### >90%
+
+```{r message=FALSE, warning=FALSE}
+top_90 <- unique_authors %>% 
+  filter(proportion>=0.90) %>% 
+  group_by(mode,normalized) %>% 
+  count(group) %>% 
+  mutate(freq = n /sum(n),
+         total = sum(n)) 
+# %>% 
+#   arrange(-n) %>%
+#   group_split(normalized,mode)
+```
+  
+```{r}
+# colors <- c('#482173','#ff9e4b', RColorBrewer::brewer.pal(4,name =  'Paired'))
+# 
+# 
+# top_90 %>% 
+#   ungroup() %>% 
+#   mutate(mode = case_when(mode=='exp2' ~ 'variance',
+#                           TRUE ~mode),
+#          normalized = case_when(mode=='lastname' ~'',
+#                                 TRUE ~normalized),
+#          model = paste(mode, normalized, sep=' ')) %>% 
+#   select(-c(mode,normalized)) %>% 
+#   bind_rows(frac_counting %>% mutate(model = 'fractional counting')) %>% 
+#   ggplot(aes(model, freq,fill=model, label=n))+
+#   geom_col(position = position_dodge())+
+#   scale_fill_manual(values = colors )+
+#   scale_y_continuous(labels = percent)+
+#   facet_wrap(.~group, scales = 'free', nrow = 1)+
+#   labs(y='',x='')+
+#   theme(axis.text.x = element_blank(),
+#         legend.position = 'bottom',
+#         text = element_text(size = 22))
+# 
+# ggsave('../results/plots/90_threshold.png', width = 10, height = 6, dpi=300, scale = 1)
+
+```
+
+
+```{r}
+g <- top_90 %>% 
+  ungroup() %>% 
+  mutate(model = paste(mode, normalized, sep='_')) %>% 
+  select(-c(mode,normalized)) %>% 
+  bind_rows(frac_counting %>% mutate(model = 'frac_counting')) %>% 
+  ggplot(aes(model, freq,fill=model, label=n, text= paste('Model:', model,
+                                                          '<br>Retrieved:', n,
+                                                          '<br>Proportion', percent(freq))))+
+  geom_col(position = position_dodge())+
+  scale_y_continuous(labels = percent)+
+  facet_wrap(.~group, scales = 'free')+
+  labs(y='',x='')+
+  theme(axis.text.x = element_blank())
+
+plotly::ggplotly(g, tooltip = c("text"))
+```
+
+```{r}
+top_90 %>% 
+  count() %>% 
+  arrange(-n)
+```
+
+Normalization and using a mixture of name and lastname reduce the probabilities overall. This doesn't necessary mean that they are worse. The ordering of authors by certainty could be the same with lower probs. for all (or it could actually be better!)
+
+With lastname we keep 785 423 out of 1609107 authors with the 90%. `r percent(785423/1609107)`
+
+## How many authors from which group we keep with the 785423 first
+
+```{r}
+unique_authors %>% 
+  # filter(proportion>0.90) %>% 
+  group_by(mode,normalized) %>% 
+  arrange(-proportion) %>% 
+  top_n(785423) %>% 
+  summarise(threshold = min(proportion))
+```
+
+This means that for retrieving the same number of authors we need to set a lower threshold on the other models (and we need to test if the accuracy is still the same or not)
+
+
+```{r}
+top_785K <- unique_authors %>% 
+  # filter(proportion>0.90) %>% 
+  group_by(mode,normalized) %>% 
+  arrange(-proportion) %>% 
+  top_n(785423) %>% 
+  count(group) %>% 
+  mutate(freq = n /sum(n),
+         total = sum(n)) 
+```
+
+
+```{r}
+g <- top_785K %>% 
+  ungroup() %>% 
+  mutate(model = paste(mode, normalized, sep='_')) %>% 
+  select(-c(mode,normalized)) %>% 
+  bind_rows(frac_counting %>% mutate(model = 'frac_counting')) %>% 
+  ggplot(aes(model, freq,fill=model, label=n, text= paste('Model:', model,
+                                                          '<br>Retrieved:', n,
+                                                          '<br>Proportion', percent(freq))))+
+  geom_col(position = position_dodge())+
+  scale_y_continuous(labels = percent)+
+  facet_wrap(.~group, scales = 'free')+
+  labs(y='',x='')+
+  theme(axis.text.x = element_blank())
+
+plotly::ggplotly(g, tooltip = c("text"))
+```
+
+
+
+In terms of retrieval of black & hispanic
+
+- Lastname alone seem to be the best option. But any model alone capture more than 3391 black authors.
+- Normalized names capture some more hispanic authors. 
+
+
+## 2 step retrieval
+### Using Lastname first and (normalized) Given names after
+
+
+```{r}
+two_step_retrieval <- function(lastnames_threshold=0.9, norm='norm'){
+  lastnames <- unique_authors %>%
+    filter(mode=='lastname') %>% 
+    filter(proportion>=lastnames_threshold)  
+  
+  firstnames <- unique_authors %>% 
+    filter(mode=='name', normalized==norm) %>%
+    arrange(-proportion) %>% 
+    top_n(nrow(lastnames))
+
+  firstnames %>% 
+    filter(!cluster_ID %in% lastnames$cluster_ID) %>% 
+    bind_rows(lastnames)
+}
+
+tsr_summary <- function(threshold, normalized='norm'){
+  two_step_retrieval(lastnames_threshold = threshold, norm = normalized) %>% 
+  group_by(group) %>% 
+  count() %>%
+  ungroup() %>% 
+  mutate(freq =n /sum(n), #percent(n /sum(n)),
+         total = sum(n)) %>% 
+  arrange(-n)
+}
+```
+
+
+
+
+```{r}
+tsr_summary(0.9, normalized = 'notnorm')
+```
+
+```{r}
+top_90 <- top_90 %>%
+  bind_rows(tsr_summary(0.9,normalized= 'norm') %>%
+              mutate(mode ='Two Step',
+                     normalized='norm')) %>%
+  bind_rows(tsr_summary(0.9, normalized= 'notnorm') %>%
+              mutate(mode ='Two Step',
+                     normalized ='notnorm'))
+top_90
+```
+
+
+```{r}
+colors <- c('#482173','#ff9e4b', RColorBrewer::brewer.pal(6,name =  'Paired'))
+
+
+top_90 %>% 
+  ungroup() %>% 
+  mutate(mode = case_when(mode=='exp2' ~ 'variance',
+                          TRUE ~mode),
+         normalized = case_when(mode=='lastname' ~'',
+                                TRUE ~normalized),
+         model = paste(mode, normalized, sep=' ')) %>% 
+  select(-c(mode,normalized)) %>% 
+  bind_rows(frac_counting %>% mutate(model = 'fractional counting')) %>% 
+  ggplot(aes(model, freq,fill=model, label=n))+
+  geom_col(position = position_dodge())+
+  scale_fill_manual(values = colors )+
+  scale_y_continuous(labels = percent)+
+  facet_wrap(.~group, scales = 'free', nrow = 1)+
+  labs(y='',x='', fill='')+
+  guides(fill=guide_legend(nrow=3,byrow=F))+
+  theme(axis.text.x = element_blank(),
+        legend.position = 'bottom',
+        text = element_text(size = 22),
+        # plot.margin = margin(l=2,r = 5, unit = 'cm'),
+        legend.text = element_text(size = 20))
+
+ggsave('../results/plots/90_threshold.png', width = 10, height = 6, dpi=300, scale = 1)
+
+```
+
+
+## Lowering the threshold 
+
+
+```{r}
+df <- tibble(threshold = seq(0.7,.99, .01)) %>% 
+  mutate(data = map(threshold, tsr_summary))
+```
+
+```{r}
+df %>% 
+  unnest(data) %>% 
+    ggplot(aes(threshold, n/1000,color = group))+
+    geom_line(size=1)+
+  scale_y_continuous(labels = number_format())+
+  scale_x_continuous(labels = percent_format(accuracy = 1.0))+
+  facet_wrap(group~., scales = 'free', nrow = 1)+
+  labs(y='Retrieved authors\nIn thousands')+
+  theme_minimal()+
+  theme(legend.position = 'none',
+        text = element_text(size=22),
+        plot.margin = margin(r =20),
+        panel.spacing = unit(1, "lines"))
+
+ggsave('../results/plots/two_steps_model.png', width = 13, height = 4, dpi=300, scale = 1)
+
+```
+
+
+
+
