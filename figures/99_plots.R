@@ -8,7 +8,7 @@ library(gt)
 library(wesanderson)
 library(ggpubr)
 
-load('data.Rdata')
+load('../../rg_app/data.Rdata')
 
 
 retrieve_table <- function(result,set){
